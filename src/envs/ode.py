@@ -726,6 +726,7 @@ class ODEEnvironment(object):
 
         self.symbols = ["I", "INT+", "INT-", "FLOAT+", "FLOAT-", ".", "10^"]
         self.elements = [str(i) for i in range(max(10, self.int_base))]
+        self.mask_element = ["<MASK>"]
 
         # SymPy elements
         self.local_dict = {}
@@ -734,7 +735,7 @@ class ODEEnvironment(object):
             self.local_dict[k] = v
 
         # vocabulary
-        self.words = SPECIAL_WORDS + self.constants + list(self.variables.keys()) + list(self.operators.keys()) + self.symbols + self.elements
+        self.words = SPECIAL_WORDS + self.constants + list(self.variables.keys()) + list(self.operators.keys()) + self.symbols + self.elements + self.mask_element
         self.id2word = {i: s for i, s in enumerate(self.words)}
         self.word2id = {s: i for i, s in self.id2word.items()}
         assert len(self.words) == len(set(self.words))
@@ -1161,6 +1162,7 @@ class ODEEnvironment(object):
 
     def input_to_infix(self, lst):
         res = ""
+        lst = lst[1:]
         degree, offset = self.parse_int(lst)
         res = str(degree) + "|"
 
@@ -1358,6 +1360,57 @@ class ODEEnvironment(object):
         for j in range(len(lyap[1:])):
             lyap_infix += "+" + lyap[j + 1]
         return (stability, lyap_infix)
+    
+    def mask_random_substrings(self, expression, return_targets=False):
+        """
+        Randomly mask a substring within each selected valid range.
+
+        - Masks a contiguous span of tokens (2-5 tokens) instead of a single token.
+        - Ensures <SPECIAL_3> tokens are not masked.
+        - Returns masked sequence and original masked-out tokens if `return_targets=True`.
+        """
+        tokens = expression.split()
+
+        # Identify indices of <SPECIAL_3> tokens, which separate different parts of the expression
+        special_indices = [i for i, token in enumerate(tokens) if token == self.func_separator]
+
+        substrings = []
+        start = 3  # Skip the first "INT+ N" (number of equations)
+
+        # Iterate over segments of the expression divided by <SPECIAL_3>
+        for end in special_indices + [len(tokens)]:
+            substrings.append((start, end - 1))
+            start = end + 1
+
+        n = len(substrings)
+
+        # If no valid substrings are found, return the original expression
+        if n == 0:
+            return (expression, []) if return_targets else expression  
+
+        # Determine the number of substrings to mask (at least 1, at most n // 2)
+        num_to_mask = 1 if n <= 3 else self.rng.randint(1, max(1, n // 2))
+
+        # Randomly select substrings to mask
+        selected_substrings_idx = self.rng.choice(len(substrings), num_to_mask, replace=False)
+
+        masked_tokens = []  # Stores original tokens that were masked
+
+        # Replace a randomly sampled substring within each selected range with <MASK>
+        for i in selected_substrings_idx:
+            start, end = substrings[i]
+            if start < end:
+                mask_start = self.rng.randint(start, end)
+                if self.rng.randint(0,1) == 0:
+                    masked_tokens.append(tokens[start:mask_start + 1])
+                    tokens[start:mask_start + 1] = ["<MASK>"]
+                else:
+                    masked_tokens.append(tokens[mask_start:end + 1])
+                    tokens[mask_start:end + 1] = ["<MASK>"]
+
+        masked_expression = " ".join(tokens)
+
+        return (masked_expression, masked_tokens) if return_targets else masked_expression
 
     def generate_bounded_polynomial(
         self,
@@ -2492,7 +2545,7 @@ class EnvDataset(Dataset):
         self.batch_size = params.batch_size
         self.env_base_seed = params.env_base_seed
         self.path = path
-        self.global_rank = params.global_rank
+        self.global_rank = params.local_rank
         self.count = 0
         assert task in ODEEnvironment.TRAINING_TASKS
         assert size is None or not self.train
@@ -2536,13 +2589,37 @@ class EnvDataset(Dataset):
         """
         Collate samples into a batch.
         """
-        x, y = zip(*elements)
+        x, y, x1, y1, mask_targets = zip(*elements)
         nb_eqs = [seq.count(self.env.func_separator) for seq in x]
         x = [torch.LongTensor([self.env.word2id[w] for w in seq]) for seq in x]
         y = [torch.LongTensor([self.env.word2id[w] for w in seq]) for seq in y]
+        x1 = [torch.LongTensor([self.env.word2id[w] for w in seq]) for seq in x1]
+        y1 = [torch.LongTensor([self.env.word2id[w] for w in seq]) for seq in y1]
+        
+        # Handle mask targets (masked spans)
+        flat_mask_targets = []
+        mask_lens = []
+        
+        for spans in mask_targets:
+            if spans:  # If there are masked spans in this sample
+                tokens = [self.env.word2id[w] for span in spans for w in span]  # Flatten masked tokens
+                flat_mask_targets.append(torch.LongTensor(tokens))
+                mask_lens.append(len(tokens))
+            else:
+                flat_mask_targets.append(torch.LongTensor([]))
+                mask_lens.append(0)
+
+        # Pad `mask_targets` for batch processing
+        if flat_mask_targets:
+            mask_targets_padded = torch.nn.utils.rnn.pad_sequence(flat_mask_targets, batch_first=True, padding_value=self.env.word2id["<pad>"])
+        else:
+            mask_targets_padded = torch.zeros((len(x), 1), dtype=torch.long)  # Placeholder if no masks exist
+
         x, x_len = self.env.batch_sequences(x)
         y, y_len = self.env.batch_sequences(y)
-        return (x, x_len), (y, y_len), torch.LongTensor(nb_eqs)
+        x1, x1_len = self.env.batch_sequences(x1)
+        y1, y1_len = self.env.batch_sequences(y1)
+        return (x, x_len), (y, y_len), (x1, x1_len), (y1, y1_len), mask_targets_padded, torch.LongTensor(nb_eqs)
 
     def init_rng(self):
         """
@@ -2597,12 +2674,21 @@ class EnvDataset(Dataset):
             if self.train:
                 index = self.env.rng.randint(len(self.data))
             x, y = self.data[index]
+            y1 = "<SPECIAL_1> " + x
+            x = "<SPECIAL_2> " + x
+            if self.train:
+                x1, mask_targets = self.env.mask_random_substrings(y1, return_targets=True)
+            else:
+                x1 = y1
+                mask_targets = []
             x = x.split()
             y = y.split()
+            x1 = x1.split()
+            y1 = y1.split()
             if (self.env.max_len > 0 and len(x) >= self.env.max_len) or (self.env.max_output_len > 0 and len(y) >= self.env.max_output_len):
                 index += 1
                 continue
-            return x, y
+            return x, y, x1, y1, mask_targets
 
     def generate_sample(self):
         """
@@ -2640,4 +2726,7 @@ class EnvDataset(Dataset):
             logger.warning(f"Clearing SymPy cache (worker {self.get_worker_id()})")
             clear_cache()
 
-        return x, y
+        y1 = "<SPECIAL_1> " + x
+        x = "<SPECIAL_2> " + x
+        x1, mask_targets = self.env.mask_random_substrings(y1, return_targets=True)
+        return x, y, x1, y1, mask_targets

@@ -15,6 +15,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn.utils import clip_grad_norm_
+from huggingface_hub import HfApi, create_repo, upload_folder
 
 from .optim import get_optimizer
 from .utils import to_cuda
@@ -260,6 +261,45 @@ class Trainer(object):
                 data["scaler"] = self.scaler.state_dict()
 
         torch.save(data, path)
+    
+    def upload_to_huggingface(self, repo_name, hf_username, hf_token=None):
+        """
+        Uploads the model (encoder and decoder) to Hugging Face.
+        """
+        repo_id = f"{hf_username}/{repo_name}"
+        
+        # Create repository if it doesn't exist
+        create_repo(repo_id, token=hf_token, exist_ok=True)
+        
+        # Define the directory to store the model files
+        save_dir = os.path.join(self.params.dump_path, repo_name)
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Save encoder and decoder state dicts
+        encoder_path = os.path.join(save_dir, "encoder_mask.pth")
+        decoder_path = os.path.join(save_dir, "decoder_mask.pth")
+        torch.save(self.modules["encoder"].state_dict(), encoder_path)
+        torch.save(self.modules["decoder"].state_dict(), decoder_path)
+        
+        # Save model configuration
+        config = {
+            "model_type": "custom_seq2seq",
+            "architecture": "Encoder-Decoder",
+            "params": vars(self.params)
+        }
+        with open(os.path.join(save_dir, "config.json"), "w") as f:
+            import json
+            json.dump(config, f, indent=4)
+        
+        # Upload model files to Hugging Face Hub
+        upload_folder(
+            folder_path=save_dir,
+            repo_id=repo_id,
+            token=hf_token,
+            commit_message="Uploading encoder-decoder model"
+        )
+        
+        logger.info(f"Model successfully uploaded to https://huggingface.co/{repo_id}")
 
     def reload_checkpoint(self):
         """
@@ -375,7 +415,8 @@ class Trainer(object):
         Export data to the disk.
         """
         env = self.env
-        (x1, len1), (x2, len2), _ = self.get_batch(task)
+        (x1, len1), (x2, len2), (x3, len3), (x4, len4), nb_ops = self.get_batch(task)
+
         for i in range(len(len1)):
             # prefix
             prefix1 = [env.id2word[wid] for wid in x1[1 : len1[i] - 1, i].tolist()]
@@ -402,10 +443,12 @@ class Trainer(object):
         decoder.train()
 
         # batch
-        (x1, len1), (x2, len2), nb_ops = self.get_batch(task)
+        (x1, len1), (x2, len2), (x3, len3), (x4, len4), nb_ops = self.get_batch(task)
 
         # cuda
-        x1, len1, x2, len2 = to_cuda(x1, len1, x2, len2)
+        x1, len1, x2, len2, x3, len3, x4, len4 = to_cuda(x1, len1, x2, len2, x3, len3, x4, len4)
+
+        # TRAIN THE GENERATION OF LYAPUNOV FUNCTIONS
 
         # target words to predict
         alen = torch.arange(len2.max(), dtype=torch.long, device=len2.device)
@@ -418,7 +461,24 @@ class Trainer(object):
         # forward / loss
         encoded = encoder("fwd", x=x1, lengths=len1, causal=False)
         decoded = decoder("fwd", x=x2, lengths=len2, causal=True, src_enc=encoded.transpose(0, 1), src_len=len1)
-        _, loss = decoder("predict", tensor=decoded, pred_mask=pred_mask, y=y, get_scores=False)
+        _, loss_lyap = decoder("predict", tensor=decoded, pred_mask=pred_mask, y=y, get_scores=False)
+
+        # TRAIN THE MASK FILLING OF VECTOR FIELDS
+
+        # target words to predict
+        alen = torch.arange(len4.max(), dtype=torch.long, device=len4.device)
+        pred_mask = alen[:, None] < len4[None] - 1  # do not predict anything given the last target word
+
+        y2 = x4[1:].masked_select(pred_mask[:-1])
+
+        assert len(y2) == (len4 - 1).sum().item()
+
+        # forward / loss
+        encoded = encoder("fwd", x=x3, lengths=len3, causal=False)
+        decoded = decoder("fwd", x=x4, lengths=len4, causal=True, src_enc=encoded.transpose(0, 1), src_len=len3)
+        _, loss_mask = decoder("predict", tensor=decoded, pred_mask=pred_mask, y=y2, get_scores=False)
+
+        loss = loss_lyap + loss_mask
 
         self.stats[task].append(loss.item())
 

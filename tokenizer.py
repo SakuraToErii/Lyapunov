@@ -29,6 +29,8 @@ class LyapunovTokenizer(PreTrainedTokenizer):
         self.arctrig_ops = ["asin", "acos", "atan"]
         self.exp_ops = ["exp", "ln"]
         self.other_ops = ["sqrt"]
+        self.pad_token = "<pad>"
+        self.mask_token = "<mask>"
 
         op_set = {
             "+": 2,
@@ -58,14 +60,14 @@ class LyapunovTokenizer(PreTrainedTokenizer):
         self.constants = ["pi", "E"]
         self.symbols = ["I", "INT+", "INT-", "FLOAT+", "FLOAT-", ".", "10^"]
         self.elements = [str(i) for i in range(max(10, self.int_base))]
-        self.mask_symbol = ["<mask>"]
-        
-        self.words = SPECIAL_WORDS + self.constants + list(self.variables.keys()) + list(self.operators.keys()) + self.symbols + self.elements + self.mask_symbol
+        # self.mask_symbol = []
+
+        self.words = SPECIAL_WORDS + self.constants + list(self.variables.keys()) + list(self.operators.keys()) + self.symbols + self.elements + [self.mask_token]
 
         self.vocab = {s: i for i, s in enumerate(self.words)}
         self.inv_vocab = {v: k for k, v in self.vocab.items()}
         super().__init__(
-            model_max_length=512, bos_token="<s>", eos_token="</s>", unk_token="<unk>", mask_token="<mask>"
+            model_max_length=4096, bos_token="<s>", eos_token="</s>"#, unk_token="<unk>", mask_token="<mask>"
         )
 
     def _tokenize(self, text):
@@ -79,7 +81,7 @@ class LyapunovTokenizer(PreTrainedTokenizer):
 
     def get_vocab(self):
         return self.vocab
-    
+
     @property
     def vocab_size(self):
         return len(self.vocab)
