@@ -5,9 +5,9 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-import re
-import math
 import inspect
+import math
+import re
 
 import torch
 from torch import optim
@@ -56,7 +56,9 @@ class Adam(optim.Optimizer):
                     continue
                 grad = p.grad.data
                 if grad.is_sparse:
-                    raise RuntimeError("Adam does not support sparse gradients, please consider SparseAdam instead")
+                    raise RuntimeError(
+                        "Adam does not support sparse gradients, please consider SparseAdam instead"
+                    )
 
                 state = self.state[p]
 
@@ -102,8 +104,20 @@ class AdamInverseSqrtWithWarmup(Adam):
         decay_factor = lr * sqrt(warmup_updates)
     """
 
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, warmup_updates=4000, warmup_init_lr=1e-7, exp_factor=0.5):
-        super().__init__(params, lr=warmup_init_lr, betas=betas, eps=eps, weight_decay=weight_decay)
+    def __init__(
+        self,
+        params,
+        lr=1e-3,
+        betas=(0.9, 0.999),
+        eps=1e-8,
+        weight_decay=0,
+        warmup_updates=4000,
+        warmup_init_lr=1e-7,
+        exp_factor=0.5,
+    ):
+        super().__init__(
+            params, lr=warmup_init_lr, betas=betas, eps=eps, weight_decay=weight_decay
+        )
 
         # linearly warmup for the first warmup_updates
         self.warmup_updates = warmup_updates
@@ -163,7 +177,9 @@ class AdamCosineWithWarmup(Adam):
         period_mult=1,
         lr_shrink=0.75,
     ):
-        super().__init__(params, lr=warmup_init_lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super().__init__(
+            params, lr=warmup_init_lr, betas=betas, eps=eps, weight_decay=weight_decay
+        )
 
         # linearly warmup for the first warmup_updates
         self.warmup_updates = warmup_updates
@@ -192,13 +208,22 @@ class AdamCosineWithWarmup(Adam):
                 t_i = self.period
                 t_curr = t - (self.period * pid)
             else:
-                pid = math.floor(math.log(1 - t / self.period * (1 - self.period_mult), self.period_mult))
+                pid = math.floor(
+                    math.log(
+                        1 - t / self.period * (1 - self.period_mult), self.period_mult
+                    )
+                )
                 t_i = self.period * (self.period_mult**pid)
-                t_curr = t - (1 - self.period_mult**pid) / (1 - self.period_mult) * self.period
+                t_curr = (
+                    t
+                    - (1 - self.period_mult**pid) / (1 - self.period_mult) * self.period
+                )
             lr_shrink = self.lr_shrink**pid
             min_lr = self.min_lr * lr_shrink
             max_lr = self.max_lr * lr_shrink
-            return min_lr + 0.5 * (max_lr - min_lr) * (1 + math.cos(math.pi * t_curr / t_i))
+            return min_lr + 0.5 * (max_lr - min_lr) * (
+                1 + math.cos(math.pi * t_curr / t_i)
+            )
 
     def step(self, closure=None):
         super().step(closure)
@@ -232,17 +257,26 @@ def get_optimizer(parameters, s):
         optim_fn = optim.Adagrad
     elif method == "adam":
         optim_fn = Adam
-        optim_params["betas"] = (optim_params.get("beta1", 0.9), optim_params.get("beta2", 0.999))
+        optim_params["betas"] = (
+            optim_params.get("beta1", 0.9),
+            optim_params.get("beta2", 0.999),
+        )
         optim_params.pop("beta1", None)
         optim_params.pop("beta2", None)
     elif method == "adam_inverse_sqrt":
         optim_fn = AdamInverseSqrtWithWarmup
-        optim_params["betas"] = (optim_params.get("beta1", 0.9), optim_params.get("beta2", 0.999))
+        optim_params["betas"] = (
+            optim_params.get("beta1", 0.9),
+            optim_params.get("beta2", 0.999),
+        )
         optim_params.pop("beta1", None)
         optim_params.pop("beta2", None)
     elif method == "adam_cosine":
         optim_fn = AdamCosineWithWarmup
-        optim_params["betas"] = (optim_params.get("beta1", 0.9), optim_params.get("beta2", 0.999))
+        optim_params["betas"] = (
+            optim_params.get("beta1", 0.9),
+            optim_params.get("beta2", 0.999),
+        )
         optim_params.pop("beta1", None)
         optim_params.pop("beta2", None)
     elif method == "adamax":
@@ -260,9 +294,21 @@ def get_optimizer(parameters, s):
         raise Exception('Unknown optimization method: "%s"' % method)
 
     # check that we give good parameters to the optimizer
-    expected_args = inspect.getargspec(optim_fn.__init__)[0]
-    assert expected_args[:2] == ["self", "params"]
-    if not all(k in expected_args[2:] for k in optim_params.keys()):
-        raise Exception('Unexpected parameters: expected "%s", got "%s"' % (str(expected_args[2:]), str(optim_params.keys())))
+    # expected_args = inspect.getargspec(optim_fn.__init__)[0]
+    # assert expected_args[:2] == ["self", "params"]
+    # if not all(k in expected_args[2:] for k in optim_params.keys()):
+    #     raise Exception(
+    #         'Unexpected parameters: expected "%s", got "%s"'
+    #         % (str(expected_args[2:]), str(optim_params.keys()))
+    #     )
+    # 使用现代的 inspect.signature API
+    sig = inspect.signature(optim_fn.__init__)
+    param_names = list(sig.parameters.keys())
+    assert param_names[:2] == ["self", "params"]
+    if not all(k in param_names[2:] for k in optim_params.keys()):
+        raise Exception(
+            'Unexpected parameters: expected "%s", got "%s"'
+            % (str(param_names[2:]), str(optim_params.keys()))
+        )
 
     return optim_fn(parameters, **optim_params)
