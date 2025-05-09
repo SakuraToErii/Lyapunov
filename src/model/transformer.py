@@ -172,6 +172,7 @@ class TransformerModel(nn.Module):
         self.eos_index = params.eos_index
         self.pad_index = params.pad_index
         self.id2word = id2word
+        self.mask_index = self.id2word.get("<mask>", None)
         assert len(self.id2word) == self.n_words
 
         # model parameters
@@ -337,18 +338,13 @@ class TransformerModel(nn.Module):
         loss = F.cross_entropy(scores.float(), y, reduction="mean")
         return scores, loss
 
-    def generate(self, src_enc, src_len, max_len=200, sample_temperature=None):
+    def generate(self, src_enc, src_len, max_len=200, sample_temperature=None, max_mask_tokens=10, min_mask_tokens=1):
         """
-        Decode a sentence given initial start.
-        `x`:
-            - LongTensor(bs, slen)
-                <EOS> W1 W2 W3 <EOS> <PAD>
-                <EOS> W1 W2 W3   W4  <EOS>
-        `lengths`:
-            - LongTensor(bs) [5, 6]
-        `positions`:
-            - False, for regular "arange" positions (LM)
-            - True, to reset positions from the new generation (MT)
+        Decode a sentence given initial start, and ensure that each <mask> token is filled with at least `min_mask_tokens` tokens.
+        `src_enc`:
+            - LongTensor(bs, slen) containing masked tokens
+        `src_len`:
+            - LongTensor(bs) containing the lengths of each sentence
         """
 
         # input batch
@@ -371,6 +367,18 @@ class TransformerModel(nn.Module):
 
         # cache compute states
         self.cache = {"slen": 0}
+
+        # If there is a <mask> token in src_enc, generate up to `max_mask_tokens` tokens for that position
+        mask_positions = (src_enc == self.mask_index)  # Assuming mask token is defined as self.mask_index
+        if mask_positions.any():
+            for i in range(bs):
+                # Get the positions of <mask> tokens for this sentence
+                mask_idx = mask_positions[:, i].nonzero().squeeze(1)
+                for m in mask_idx:
+                    # For each <mask>, generate up to max_mask_tokens, but ensure at least min_mask_tokens are generated
+                    top_k = torch.topk(scores[m], max_mask_tokens, dim=-1).indices  # Top `max_mask_tokens` predictions
+                    # Replace the mask with generated tokens (ensure at least min_mask_tokens)
+                    src_enc[m, i] = top_k[:min_mask_tokens]  # Ensure min_mask_tokens are filled
 
         while cur_len < max_len:
 
