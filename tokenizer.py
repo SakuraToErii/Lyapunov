@@ -1,11 +1,16 @@
-from collections import OrderedDict
-import sympy as sp
-from transformers import PreTrainedTokenizer
 import json
 import os
+from collections import OrderedDict
+
+import sympy as sp
+from transformers import PreTrainedTokenizer
 
 SPECIAL_WORDS = ["<s>", "</s>", "<pad>", "(", ")"]
 SPECIAL_WORDS = SPECIAL_WORDS + [f"<SPECIAL_{i}>" for i in range(10)]
+"""
+这个类继承自 Hugging Face transformers 库中的 PreTrainedTokenizer 基类。这意味着它可以与 transformers 库中的模型（如 BART、GPT 等）无缝集成，用于将文本数据转换为模型可以理解的数字输入，反之亦然。
+"""
+
 
 class LyapunovTokenizer(PreTrainedTokenizer):
     def __init__(self):
@@ -56,18 +61,30 @@ class LyapunovTokenizer(PreTrainedTokenizer):
         self.operators_lyap = op_set
         self.operators = self.operators_lyap
 
-        self.variables = OrderedDict({f"x{i}": sp.Symbol(f"x{i}") for i in range(2 * self.max_degree)})
+        self.variables = OrderedDict(
+            {f"x{i}": sp.Symbol(f"x{i}") for i in range(2 * self.max_degree)}
+        )
         self.constants = ["pi", "E"]
         self.symbols = ["I", "INT+", "INT-", "FLOAT+", "FLOAT-", ".", "10^"]
         self.elements = [str(i) for i in range(max(10, self.int_base))]
         # self.mask_symbol = []
 
-        self.words = SPECIAL_WORDS + self.constants + list(self.variables.keys()) + list(self.operators.keys()) + self.symbols + self.elements + [self.mask_token]
+        self.words = (
+            SPECIAL_WORDS
+            + self.constants
+            + list(self.variables.keys())
+            + list(self.operators.keys())
+            + self.symbols
+            + self.elements
+            + [self.mask_token]
+        )
 
         self.vocab = {s: i for i, s in enumerate(self.words)}
         self.inv_vocab = {v: k for k, v in self.vocab.items()}
         super().__init__(
-            model_max_length=4096, bos_token="<s>", eos_token="</s>"#, unk_token="<unk>", mask_token="<mask>"
+            model_max_length=4096,
+            bos_token="<s>",
+            eos_token="</s>",  # , unk_token="<unk>", mask_token="<mask>"
         )
 
     def _tokenize(self, text):
